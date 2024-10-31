@@ -32,7 +32,7 @@ struct SPyramidingInfo
 //+------------------------------------------------------------------+
 enum ENUM_POSITION_ERROR
 {
-    POSITION_ERROR_NONE,              // 에��� 없음
+    POSITION_ERROR_NONE,              // 에 없음
     POSITION_ERROR_TRADE_NOT_ALLOWED, // 트레이딩 불가
     POSITION_ERROR_TRADE_DISABLED,    // 트레이딩 비활성화
     POSITION_ERROR_MARKET_CLOSED,     // 마켓 종료
@@ -89,7 +89,7 @@ private:
     // 트레이드 객체
     CTrade            m_trade;            // 트레드 객체
     
-    // 헬퍼 함수
+    // 헬퍼 함��
     int               FindPosition(string symbol);  // 심볼로 포지션 찾기
     bool              CanAddPyramiding(string symbol);  // 피라미딩 가능 여부
     int               FindPyramiding(string symbol);  // 심볼의 피라미딩 정보 찾기
@@ -108,6 +108,10 @@ private:
     double            CalculateTurtleUnit(string symbol, double atr);
     double            GetSymbolPointValue(string symbol);
     double            NormalizeLot(string symbol, double lot);
+    
+    // ATR 기반 스탑로스 계산
+    double            CalculateStopLoss(string symbol, ENUM_POSITION_TYPE type, 
+                                     double entryPrice, double atr);
     
 public:
     // 생성자/소멸자
@@ -134,7 +138,7 @@ public:
     
     // 실제 트레이딩
     bool             ExecuteOrder(string symbol, int magic, ENUM_POSITION_TYPE type, 
-                                double volume, double price, double sl, double tp);
+                                double volume, double price, double atr);
     bool             ExecuteClose(string symbol, ulong ticket);
     
     // 에러 정보
@@ -250,7 +254,7 @@ bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE
     // 최대 포지션 수 체크
     if(!CanOpenPosition())
     {
-        SetError(POSITION_ERROR_MAX_POSITIONS, "최대 포지션 수 초과");
+        SetError(POSITION_ERROR_MAX_POSITIONS, "최대 포지션 수 과");
         return false;
     }
     
@@ -272,7 +276,7 @@ bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE
     SymbolInfoTick(symbol, lastTick);
     double price = (type == POSITION_TYPE_BUY) ? lastTick.ask : lastTick.bid;
     
-    if(!ExecuteOrder(symbol, magic, type, turtleVolume, price, sl, tp))
+    if(!ExecuteOrder(symbol, magic, type, turtleVolume, price, atr))
     {
         SetError(POSITION_ERROR_TRADE_FAIL, 
                 StringFormat("주문 실패: %d", GetLastError()));
@@ -390,61 +394,40 @@ bool CPositionManager::CanAddPosition(string symbol) const
 //+------------------------------------------------------------------+
 //| 실제 주문 실행                                                     |
 //+------------------------------------------------------------------+
-bool CPositionManager::ExecuteOrder(string symbol, int magic, ENUM_POSITION_TYPE type,
-                                  double volume, double price, double sl, double tp)
+bool CPositionManager::ExecuteOrder(string symbol, int magic, 
+                                  ENUM_POSITION_TYPE type,
+                                  double volume, double price, double atr)
 {
-    // 매직넘버 설정
-    m_trade.SetExpertMagicNumber(magic);
+    // 스탑로스 계산
+    double stopLoss = CalculateStopLoss(symbol, type, price, atr);
     
-    // 주문 실행 전 재시도 횟 설정
-    int maxTries = 3;
-    int tries = 0;
-    bool result = false;
+    // POSITION_TYPE을 ORDER_TYPE으로 변환
+    ENUM_ORDER_TYPE orderType = (type == POSITION_TYPE_BUY) ? 
+                               ORDER_TYPE_BUY : ORDER_TYPE_SELL;
     
-    while(tries < maxTries)
+    // 주문 실행
+    if(!m_trade.PositionOpen(symbol, orderType, volume, price, stopLoss, 0))
     {
-        // 주문 실행
-        if(type == POSITION_TYPE_BUY)
-            result = m_trade.Buy(volume, symbol, price, sl, tp);
-        else
-            result = m_trade.Sell(volume, symbol, price, sl, tp);
-            
-        if(result)
-            break;
-            
-        // 실패 시 에러 확인
-        int error = GetLastError();
-        
-        // 재시도 가능한 에러인지 확인
-        if(error == ERR_TRADE_TIMEOUT || 
-           error == ERR_TRADE_SERVER_BUSY || 
-           error == ERR_TRADE_CONNECTION)
-        {
-            tries++;
-            Sleep(500);  // 0.5초 대기
-            continue;
-        }
-        
-        // 재시도 불가능한 에러
         SetError(POSITION_ERROR_TRADE_FAIL, 
-                StringFormat("주문 실패 (에러코드: %d)", error));
+                StringFormat("포지션 오픈 실패 (에러코드: %d)", GetLastError()));
         return false;
     }
     
-    // 주문 성공 시 포지션 정보 동기화
-    if(result)
+    // 피라미딩 정보 확인
+    int pyramidIndex = FindPyramiding(symbol);
+    if(pyramidIndex != -1 && m_pyramiding[pyramidIndex].count > 0)
     {
-        if(!SyncPositions())
+        // 기존 포지션들의 SL 업데이트
+        for(int i = 0; i < m_positionCount; i++)
         {
-            SetError(POSITION_ERROR_SYNC_FAIL, "포지션 동기화 실패");
-            return false;
+            if(m_positions[i].type == type)
+            {
+                if(!m_trade.PositionModify(m_positions[i].ticket, stopLoss, 0))
+                {
+                    Print("기존 포지션 SL 수정 실패: 티켓 #", m_positions[i].ticket);
+                }
+            }
         }
-    }
-    else
-    {
-        SetError(POSITION_ERROR_TRADE_FAIL, 
-                StringFormat("최대 재시도 횟수 초과 (%d회)", maxTries));
-        return false;
     }
     
     return true;
@@ -556,7 +539,7 @@ bool CPositionManager::IsTradeAllowed(string symbol)
     // 전역 트레이딩 활성화 여부
     if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
     {
-        SetError(POSITION_ERROR_TRADE_DISABLED, "트레이딩이 비활성화됨");
+        SetError(POSITION_ERROR_TRADE_DISABLED, "트레이딩 비활성화됨");
         return false;
     }
     
@@ -716,4 +699,21 @@ double CPositionManager::NormalizeLot(string symbol, double lot)
     
     // 스텝 단위로 반올림
     return MathFloor(lot / stepLot) * stepLot;
+}
+
+//+------------------------------------------------------------------+
+//| ATR 기반 스탑로스 계산                                             |
+//+------------------------------------------------------------------+
+double CPositionManager::CalculateStopLoss(string symbol, ENUM_POSITION_TYPE type, 
+                                         double entryPrice, double atr)
+{
+    double stopLoss = 0;
+    double twoN = atr * 2;  // 2N
+    
+    if(type == POSITION_TYPE_BUY)
+        stopLoss = entryPrice - twoN;
+    else
+        stopLoss = entryPrice + twoN;
+        
+    return NormalizeDouble(stopLoss, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
 }
