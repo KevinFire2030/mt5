@@ -30,6 +30,8 @@ struct SPyramidingInfo
 //+------------------------------------------------------------------+
 //| 포지션 매니저 클래스                                               |
 //+------------------------------------------------------------------+
+#include <Trade\Trade.mqh>
+
 class CPositionManager
 {
 private:
@@ -42,17 +44,21 @@ private:
     SPyramidingInfo   m_pyramiding[];     // 심볼별 피라미딩 정보
     int               m_positionCount;     // 현재 포지션 수
     
+    // 트레이드 객체
+    CTrade            m_trade;            // 트레이드 객체
+    
     // 헬퍼 함수
     int               FindPosition(string symbol);  // 심볼로 포지션 찾기
     bool              CanAddPyramiding(string symbol);  // 피라미딩 가능 여부
     int               FindPyramiding(string symbol);  // 심볼의 피라미딩 정보 찾기
+    bool              SyncPositions();    // 실제 포지션과 동기화
     
 public:
     // 생성자/소멸자
                      CPositionManager();
                     ~CPositionManager();
     
-    // 초기화
+    // 초화
     bool             Init(int maxPositions, int maxPyramiding);
     
     // 포지션 관리
@@ -69,6 +75,11 @@ public:
     // 상태 체크
     bool             CanOpenPosition() const { return m_positionCount < m_maxPositions; }
     bool             CanAddPosition(string symbol) const;
+    
+    // 실제 트레이딩
+    bool             ExecuteOrder(string symbol, int magic, ENUM_POSITION_TYPE type, 
+                                double volume, double price, double sl, double tp);
+    bool             ExecuteClose(string symbol, ulong ticket);
 };
 
 //+------------------------------------------------------------------+
@@ -158,45 +169,54 @@ bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE
 {
     // 최대 포지션 수 체크
     if(!CanOpenPosition())
+    {
+        Print("최대 포지션 수 초과");
         return false;
+    }
         
     // 피라미딩 가능 여부 체크
     int posIndex = FindPosition(symbol);
     if(posIndex != -1)  // 이미 포지션 있음
     {
         if(!CanAddPyramiding(symbol))
+        {
+            Print("최대 피라미딩 횟수 초과");
             return false;
-            
-        // 피라미딩 카운트 증가
-        int pyramidIndex = FindPyramiding(symbol);
-        if(pyramidIndex == -1)
-        {
-            pyramidIndex = ArraySize(m_pyramiding);
-            ArrayResize(m_pyramiding, pyramidIndex + 1);
-            m_pyramiding[pyramidIndex].symbol = symbol;
-            m_pyramiding[pyramidIndex].count = 1;
         }
-        else
+            
+        // 기존 포지션과 같은 방향인지 확인
+        if(m_positions[posIndex].type != type)
         {
-            m_pyramiding[pyramidIndex].count++;
+            Print("기존 포지션과 반대 방향으로 피라미딩 불가");
+            return false;
         }
     }
     
-    // 새 포지션 추가
-    int newIndex = m_positionCount;
-    ArrayResize(m_positions, newIndex + 1);
+    // 현재가 확인
+    MqlTick lastTick;
+    if(!SymbolInfoTick(symbol, lastTick))
+    {
+        Print("가격 정보 조회 실패");
+        return false;
+    }
     
-    // 포지션 정보 설정
-    m_positions[newIndex].symbol = symbol;
-    m_positions[newIndex].magic = magic;
-    m_positions[newIndex].type = type;
-    m_positions[newIndex].volume = volume;
-    m_positions[newIndex].stopLoss = sl;
-    m_positions[newIndex].takeProfit = tp;
-    m_positions[newIndex].entryATR = atr;
-    m_positions[newIndex].entryTime = TimeCurrent();
+    // 주문 가격 설정
+    double price = (type == POSITION_TYPE_BUY) ? lastTick.ask : lastTick.bid;
     
-    m_positionCount++;
+    // 실제 주문 실행
+    if(!ExecuteOrder(symbol, magic, type, volume, price, sl, tp))
+    {
+        Print("주문 실행 실패");
+        return false;
+    }
+    
+    // ATR 정보 업데이트
+    int lastIndex = m_positionCount - 1;
+    if(lastIndex >= 0)
+    {
+        m_positions[lastIndex].entryATR = atr;
+    }
+    
     return true;
 }
 
@@ -205,29 +225,29 @@ bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE
 //+------------------------------------------------------------------+
 bool CPositionManager::ClosePosition(string symbol)
 {
-    // 해당 심볼의 모든 포지션을 찾아서 제거
-    int posCount = m_positionCount;  // 원래 카운트 저장
+    // 해당 심볼의 모든 포지션을 찾아서 종료
+    bool result = true;
     
-    // 뒤에서부터 검색 (배열 제거시 인덱스 변화 방지)
-    for(int i = posCount - 1; i >= 0; i--)
+    for(int i = m_positionCount - 1; i >= 0; i--)
     {
         if(m_positions[i].symbol == symbol)
         {
-            // 포지션 제거
-            ArrayRemove(m_positions, i, 1);
-            m_positionCount--;
+            if(!ExecuteClose(symbol, m_positions[i].ticket))
+            {
+                Print("포지션 종료 실패: 티켓 #", m_positions[i].ticket);
+                result = false;
+            }
         }
     }
     
-    // 피라미딩 정보 완전 제거
+    // 피라미딩 정보 제거
     int pyramidIndex = FindPyramiding(symbol);
     if(pyramidIndex != -1)
     {
         ArrayRemove(m_pyramiding, pyramidIndex, 1);
     }
     
-    // 하나라도 제거되었다면 성공
-    return posCount > m_positionCount;
+    return result;
 }
 
 //+------------------------------------------------------------------+
@@ -296,4 +316,121 @@ bool CPositionManager::CanAddPosition(string symbol) const
     }
     
     return true;  // 새 포지션 가능
-} 
+}
+
+//+------------------------------------------------------------------+
+//| 실제 주문 실행                                                     |
+//+------------------------------------------------------------------+
+bool CPositionManager::ExecuteOrder(string symbol, int magic, ENUM_POSITION_TYPE type,
+                                  double volume, double price, double sl, double tp)
+{
+    // 매직넘버 설정
+    m_trade.SetExpertMagicNumber(magic);
+    
+    // 주문 실행
+    bool result = false;
+    if(type == POSITION_TYPE_BUY)
+        result = m_trade.Buy(volume, symbol, price, sl, tp);
+    else
+        result = m_trade.Sell(volume, symbol, price, sl, tp);
+        
+    if(!result)
+    {
+        Print("주문 실패: ", GetLastError());
+        return false;
+    }
+    
+    // 주문 성공 시 포지션 정보 업데이트
+    if(!SyncPositions())
+    {
+        Print("포지션 동기화 실패");
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| 실제 포지션 종료                                                   |
+//+------------------------------------------------------------------+
+bool CPositionManager::ExecuteClose(string symbol, ulong ticket)
+{
+    // 포지션 종료
+    if(!m_trade.PositionClose(ticket))
+    {
+        Print("포지션 종료 실패: ", GetLastError());
+        return false;
+    }
+    
+    // 포지션 정보 업데이트
+    if(!SyncPositions())
+    {
+        Print("포지션 동기화 실패");
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| 실제 포지션과 동기화                                               |
+//+------------------------------------------------------------------+
+bool CPositionManager::SyncPositions()
+{
+    // 기존 포지션 정보 초기화
+    ArrayFree(m_positions);
+    ArrayFree(m_pyramiding);
+    m_positionCount = 0;
+    
+    // 현재 열린 포지션 수 확인
+    int total = PositionsTotal();
+    if(total == 0)
+        return true;  // 포지션 없음
+        
+    // 포지션 배열 크기 조정
+    ArrayResize(m_positions, total);
+    
+    // 모든 포지션 정보 수집
+    for(int i = 0; i < total; i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket <= 0)
+            continue;
+            
+        // 포지션 정보 가져오기
+        if(!PositionSelectByTicket(ticket))
+            continue;
+            
+        // 포지션 정보 저장
+        m_positions[m_positionCount].ticket = ticket;
+        m_positions[m_positionCount].symbol = PositionGetString(POSITION_SYMBOL);
+        m_positions[m_positionCount].magic = (int)PositionGetInteger(POSITION_MAGIC);
+        m_positions[m_positionCount].type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+        m_positions[m_positionCount].volume = PositionGetDouble(POSITION_VOLUME);
+        m_positions[m_positionCount].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+        m_positions[m_positionCount].entryTime = (datetime)PositionGetInteger(POSITION_TIME);
+        m_positions[m_positionCount].stopLoss = PositionGetDouble(POSITION_SL);
+        m_positions[m_positionCount].takeProfit = PositionGetDouble(POSITION_TP);
+        
+        // 피라미딩 카운트 업데이트
+        string symbol = m_positions[m_positionCount].symbol;
+        int pyramidIndex = FindPyramiding(symbol);
+        if(pyramidIndex == -1)
+        {
+            // 새로운 심볼의 피라미딩 정보 추가
+            pyramidIndex = ArraySize(m_pyramiding);
+            ArrayResize(m_pyramiding, pyramidIndex + 1);
+            m_pyramiding[pyramidIndex].symbol = symbol;
+            m_pyramiding[pyramidIndex].count = 1;
+        }
+        else
+        {
+            // 기존 심볼의 피라미딩 카운트 증가
+            m_pyramiding[pyramidIndex].count++;
+        }
+        
+        m_positionCount++;
+    }
+    
+    return true;
+}
