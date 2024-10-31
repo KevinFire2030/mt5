@@ -1,0 +1,47 @@
+# MQL5 컴파일된 파일들
+*.ex5
+*.ex4
+*.dll
+*.obj
+
+# 로그 파일들
+*.log
+
+# 백업 파일들
+*.bak
+
+# MetaEditor 임시 파일들
+*.mq5.save
+*.mqh.save
+
+# 설정 파일들
+*.set
+
+# 기타 임시 파일들
+*.swp
+*~
+
+# 폴더 제외
+Files/
+Logs/
+Experts/Examples/
+Libraries/
+Include/DoEasy/
+Include/Canvas/
+Include/ChartObjects/
+Include/Charts/
+Include/Controls/
+Include/Files/
+Include/Generic/
+Include/Indicators/
+Include/Math/
+Include/MovingAverages.mqh
+Include/Object.mqh
+Include/StdLibErr.mqh
+Include/Strings/
+Include/Tools/
+Include/Trade/
+Include/WinAPI/
+Indicators/
+Profiles/
+Scripts/ 
