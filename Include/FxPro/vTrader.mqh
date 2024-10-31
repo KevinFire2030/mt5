@@ -1,6 +1,9 @@
 //+------------------------------------------------------------------+
 //| vTrader 클래스 정의                                                |
 //+------------------------------------------------------------------+
+// 시그널 매니저 포함
+#include <FxPro\SignalManager.mqh>
+
 class CvTrader
 {
 private:
@@ -39,6 +42,9 @@ private:
     // 틱 볼륨 배열 추가
     long              m_tickVolumes[];     // 틱 볼륨 배열
     
+    // 시그널 매니저 추가
+    CSignalManager     m_signalManager;
+    
 public:
                      CvTrader(void);
                     ~CvTrader(void);
@@ -59,6 +65,9 @@ public:
     
     // 테스트용 출력 함수
     void              PrintData();
+    
+    // 시그널 테스트용 함수 추가
+    void              TestSignal();
 };
 
 //+------------------------------------------------------------------+
@@ -230,6 +239,40 @@ void CvTrader::PrintData()
 }
 
 //+------------------------------------------------------------------+
+//| 시그널 테스트용 함수                                               |
+//+------------------------------------------------------------------+
+void CvTrader::TestSignal()
+{
+    // 시그널 매니저 업데이트
+    if(!m_signalManager.Update(m_ema5Buffer, m_ema20Buffer, m_ema40Buffer))
+    {
+        Print("시그널 매니저 업데이트 실패");
+        return;
+    }
+    
+    // 시그널 계산
+    ENUM_SIGNAL_TYPE signal = m_signalManager.Calculate();
+    
+    // 시그널 정보 출력
+    string signalInfo = "";
+    switch(signal)
+    {
+        case SIGNAL_BUY:    signalInfo = "매수 시그널"; break;
+        case SIGNAL_SELL:   signalInfo = "매도 시그널"; break;
+        case SIGNAL_CLOSE:  signalInfo = "청산 시그널"; break;
+        default:           signalInfo = "시그널 없음"; break;
+    }
+    
+    Print("=== 시그널 테스트 ===");
+    Print("시간: ", TimeToString(iTime(Symbol(), m_timeframe, 1)));
+    Print("시그널: ", signalInfo);
+    Print("EMA5: ", m_ema5Buffer[1]);
+    Print("EMA20: ", m_ema20Buffer[1]);
+    Print("EMA40: ", m_ema40Buffer[1]);
+    Print("==================\n");
+}
+
+//+------------------------------------------------------------------+
 //| 틱 처리                                                            |
 //+------------------------------------------------------------------+
 void CvTrader::OnTick()
@@ -241,10 +284,11 @@ void CvTrader::OnTick()
         return;
     }
     
-    // 새로운 봉에서만 데이터 출력
+    // 새로운 봉에서만 처리
     m_isNewBar = IsNewBar();
     if(m_isNewBar)
     {
-        PrintData();  // 데이터 출력
+        PrintData();     // 데이터 출력
+        TestSignal();    // 시그널 테스트
     }
 } 
