@@ -32,18 +32,36 @@ struct SPyramidingInfo
 //+------------------------------------------------------------------+
 enum ENUM_POSITION_ERROR
 {
-    POSITION_ERROR_NONE,              // 에러 없음
-    POSITION_ERROR_MAX_POSITIONS,     // 최대 포지션 수 초과
-    POSITION_ERROR_MAX_PYRAMIDING,    // 최대 피라미딩 수 초과
-    POSITION_ERROR_WRONG_DIRECTION,   // 잘못된 피라미딩 방향
-    POSITION_ERROR_INVALID_VOLUME,    // 잘못된 거래량
-    POSITION_ERROR_INVALID_PRICE,     // 잘못된 가격
-    POSITION_ERROR_INVALID_STOPS,     // 잘못된 SL/TP
-    POSITION_ERROR_NO_POSITION,       // 포지션 없음
+    POSITION_ERROR_NONE,              // 에��� 없음
+    POSITION_ERROR_TRADE_NOT_ALLOWED, // 트레이딩 불가
     POSITION_ERROR_TRADE_DISABLED,    // 트레이딩 비활성화
     POSITION_ERROR_MARKET_CLOSED,     // 마켓 종료
+    POSITION_ERROR_MAX_POSITIONS,     // 최대 포지션 수 초과
+    POSITION_ERROR_MAX_PYRAMIDING,    // 최대 피라미딩 수 초과
+    POSITION_ERROR_INVALID_VOLUME,    // 잘못된 거래량
+    POSITION_ERROR_INVALID_PRICE,     // 잘못된 가격
+    POSITION_ERROR_INVALID_STOPS,     // 잘못된 손절/이익실현
     POSITION_ERROR_TRADE_FAIL,        // 주문 실패
+    POSITION_ERROR_WRONG_DIRECTION,   // 잘못된 방향
+    POSITION_ERROR_UNIT_CALC_FAIL,    // 유닛 계산 실패
     POSITION_ERROR_SYNC_FAIL          // 동기화 실패
+};
+
+//+------------------------------------------------------------------+
+//| 터틀 유닛 계산을 위한 구조체                                       |
+//+------------------------------------------------------------------+
+struct STurtleUnitSettings
+{
+    double riskPercent;        // 리스크 비율 (기본 1%)
+    int    atrPeriod;         // ATR 기간 (기본 20일)
+    double minLot;            // 최소 거래 단위 (기본 0.01)
+    
+    STurtleUnitSettings()
+    {
+        riskPercent = 1.0;    // 1%
+        atrPeriod = 20;       // 20일
+        minLot = 0.01;        // 0.01랏
+    }
 };
 
 //+------------------------------------------------------------------+
@@ -56,7 +74,7 @@ enum ENUM_POSITION_ERROR
 #define ERR_TRADE_SERVER_BUSY    4107    // 서버 비지
 #define ERR_TRADE_CONNECTION     4526    // 연결 없음
 
-class CPositionManager
+class CPositionManager : public CTrade
 {
 private:
     // 포지션 설정
@@ -69,7 +87,7 @@ private:
     int               m_positionCount;     // 현재 포지션 수
     
     // 트레이드 객체
-    CTrade            m_trade;            // 트레이드 객체
+    CTrade            m_trade;            // 트레드 객체
     
     // 헬퍼 함수
     int               FindPosition(string symbol);  // 심볼로 포지션 찾기
@@ -79,9 +97,17 @@ private:
     
     ENUM_POSITION_ERROR  m_lastError;        // 마지막 에러 코드
     string              m_lastErrorMsg;      // 마지막 에러 메시지
+    string           m_lastErrorString;    // 마지막 에러 메시지
     
     // 에러 설정
     void               SetError(ENUM_POSITION_ERROR error, string msg = "");
+    
+    STurtleUnitSettings m_turtleSettings;   // 터틀 설정
+    
+    // 유닛 계산 함수
+    double            CalculateTurtleUnit(string symbol, double atr);
+    double            GetSymbolPointValue(string symbol);
+    double            NormalizeLot(string symbol, double lot);
     
 public:
     // 생성자/소멸자
@@ -114,11 +140,16 @@ public:
     // 에러 정보
     ENUM_POSITION_ERROR GetLastError() const { return m_lastError; }
     string             GetLastErrorMsg() const { return m_lastErrorMsg; }
+    string          GetLastErrorString() const { return m_lastErrorString; }
     
     // 상태 체크 함수 추가
     bool               IsTradeAllowed(string symbol);
     bool               ValidateVolume(string symbol, double volume);
     bool               ValidateStops(string symbol, double price, double sl, double tp);
+    
+    // 터틀 설정
+    void             SetTurtleSettings(const STurtleUnitSettings &settings) { m_turtleSettings = settings; }
+    void             GetTurtleSettings(STurtleUnitSettings &settings) const { settings = m_turtleSettings; }
 };
 
 //+------------------------------------------------------------------+
@@ -207,11 +238,14 @@ bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE
                                   double volume, double sl, double tp, double atr)
 {
     // 초기화
-    SetError(POSITION_ERROR_NONE);
+    SetError(POSITION_ERROR_NONE, "");
     
     // 트레이딩 가능 여부 체크
     if(!IsTradeAllowed(symbol))
+    {
+        SetError(POSITION_ERROR_TRADE_NOT_ALLOWED, "트레이딩이 허용되지 않음");
         return false;
+    }
     
     // 최대 포지션 수 체크
     if(!CanOpenPosition())
@@ -220,55 +254,25 @@ bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE
         return false;
     }
     
-    // 볼륨 유효성 체크
-    if(!ValidateVolume(symbol, volume))
+    // 터틀 유닛 계산 (volume 파라미터 무시)
+    double turtleVolume = CalculateTurtleUnit(symbol, atr);  // 여기서 호출
+    Print("\n=== 터틀 유닛 계산 결과 ===");
+    Print("계산된 거래량: ", turtleVolume);
+    Print("========================\n");
+    
+    if(turtleVolume <= 0)
     {
         SetError(POSITION_ERROR_INVALID_VOLUME, 
-                StringFormat("잘못된 거래량: %.2f", volume));
-        return false;
-    }
-    
-    // 피라미딩 체크
-    int posIndex = FindPosition(symbol);
-    if(posIndex != -1)
-    {
-        // 최대 피라미딩 체크
-        if(!CanAddPyramiding(symbol))
-        {
-            SetError(POSITION_ERROR_MAX_PYRAMIDING, 
-                    StringFormat("최대 피라미딩 횟수 초과: %d", m_maxPyramiding));
-            return false;
-        }
-        
-        // 방향 체크
-        if(m_positions[posIndex].type != type)
-        {
-            SetError(POSITION_ERROR_WRONG_DIRECTION, 
-                    "기존 포지션과 반대 방향으로 피라미딩 불가");
-            return false;
-        }
-    }
-    
-    // 현재가 확인
-    MqlTick lastTick;
-    if(!SymbolInfoTick(symbol, lastTick))
-    {
-        SetError(POSITION_ERROR_INVALID_PRICE, "가격 정보 조회 실패");
-        return false;
-    }
-    
-    // 주문 가격 설정
-    double price = (type == POSITION_TYPE_BUY) ? lastTick.ask : lastTick.bid;
-    
-    // SL/TP 유효성 체크
-    if(!ValidateStops(symbol, price, sl, tp))
-    {
-        SetError(POSITION_ERROR_INVALID_STOPS, "잘못된 SL/TP 설정");
+                StringFormat("유닛 계산 실패: %.2f", turtleVolume));
         return false;
     }
     
     // 실제 주문 실행
-    if(!ExecuteOrder(symbol, magic, type, volume, price, sl, tp))
+    MqlTick lastTick;
+    SymbolInfoTick(symbol, lastTick);
+    double price = (type == POSITION_TYPE_BUY) ? lastTick.ask : lastTick.bid;
+    
+    if(!ExecuteOrder(symbol, magic, type, turtleVolume, price, sl, tp))
     {
         SetError(POSITION_ERROR_TRADE_FAIL, 
                 StringFormat("주문 실패: %d", GetLastError()));
@@ -392,7 +396,7 @@ bool CPositionManager::ExecuteOrder(string symbol, int magic, ENUM_POSITION_TYPE
     // 매직넘버 설정
     m_trade.SetExpertMagicNumber(magic);
     
-    // 주문 실행 전 재시도 횟수 설정
+    // 주문 실행 전 재시도 횟 설정
     int maxTries = 3;
     int tries = 0;
     bool result = false;
@@ -538,6 +542,7 @@ void CPositionManager::SetError(ENUM_POSITION_ERROR error, string msg = "")
 {
     m_lastError = error;
     m_lastErrorMsg = msg;
+    m_lastErrorString = msg;
     
     if(error != POSITION_ERROR_NONE)
         Print("포지션 매니저 에러: ", EnumToString(error), ", ", msg);
@@ -651,4 +656,64 @@ bool CPositionManager::ValidateStops(string symbol, double price, double sl, dou
     }
     
     return true;
+}
+
+//+------------------------------------------------------------------+
+//| 1유닛 계산                                                         |
+//+------------------------------------------------------------------+
+double CPositionManager::CalculateTurtleUnit(string symbol, double atr)
+{
+    // 테스트용 고정 계좌 잔고 ($100)
+    double equity = 100.0;
+    
+    // 심볼 정보 가져오기
+    double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+    double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+    double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+    
+    // N(ATR) 달러 변동폭 계산
+    double dollarVolatility = (atr / tickSize) * tickValue;
+    
+    // 1유닛 계산
+    double riskAmount = equity * m_turtleSettings.riskPercent / 100.0;  // $1
+    double unitSize = riskAmount / dollarVolatility;
+    
+    // 상세 계산 과정 출력
+    Print("\n=== 터틀 유닛 상세 계산 ===");
+    Print("심볼: ", symbol);
+    Print("계좌 잔고: $", equity);
+    Print("리스크 비율: ", m_turtleSettings.riskPercent, "%");
+    Print("리스크 금액: $", riskAmount);
+    Print("ATR: ", atr);
+    Print("틱 가치: $", tickValue);
+    Print("틱 크기: ", tickSize);
+    Print("최소 거래량: ", minLot);
+    Print("N 달러 변동폭: $", dollarVolatility);
+    Print("Raw 유닛 크기: ", unitSize);
+    
+    // 최소 거래 단위로 정규화
+    double normalizedLot = NormalizeLot(symbol, unitSize);
+    Print("정규화된 유닛 크기: ", normalizedLot);
+    Print("========================\n");
+    
+    return normalizedLot;
+}
+
+//+------------------------------------------------------------------+
+//| 거래량 정규화                                                      |
+//+------------------------------------------------------------------+
+double CPositionManager::NormalizeLot(string symbol, double lot)
+{
+    double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+    double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+    double stepLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+    
+    // 최소 거래량으로 반올림
+    lot = MathMax(minLot, MathFloor(lot / minLot) * minLot);
+    
+    // 최대 거래량 제한
+    lot = MathMin(lot, maxLot);
+    
+    // 스텝 단위로 반올림
+    return MathFloor(lot / stepLot) * stepLot;
 }

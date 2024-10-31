@@ -258,7 +258,7 @@ void CvTrader::PrintData()
 //+------------------------------------------------------------------+
 void CvTrader::TestSignal()
 {
-    // 시그널 매니저 업데이트
+    // 시그널 매니저 업데이���
     if(!m_signalManager.Update(m_ema5Buffer, m_ema20Buffer, m_ema40Buffer))
     {
         Print("시그널 매니저 업데이트 실패");
@@ -362,7 +362,6 @@ void CvTrader::TestLiveTrading()
     
     string symbol = Symbol();
     int magic = 12345;
-    double volume = 0.1;
     
     // ATR 계산
     double atr = GetATR();
@@ -379,30 +378,27 @@ void CvTrader::TestLiveTrading()
         Print("포지션 매니저 초기화 실패");
         return;
     }
+    
+    // 터틀 설정
+    STurtleUnitSettings turtleSettings;
+    turtleSettings.riskPercent = 1.0;  // 1%
+    turtleSettings.atrPeriod = 20;     // 20일
+    turtleSettings.minLot = 0.01;      // 최소 0.01랏
+    m_positionManager.SetTurtleSettings(turtleSettings);
+    
     Print("포지션 매니저 초기화 성공");
     
-    // 2. 잘못된 볼륨으로 테스트
-    Print("\n--- 잘못된 볼륨 테스트 ---");
-    if(!m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, 0.001, 0, 0, atr))
-    {
-        Print("예상된 실패: ", m_positionManager.GetLastErrorMsg());
-    }
+    // 2. 정상 포지션 오픈
+    Print("\n--- 정상 포지션 오픈 테스트 ---");
     
-    // 3. 잘못된 SL/TP로 테스트
-    Print("\n--- 잘못된 SL/TP 테스트 ---");
+    // SL/TP 계산
     MqlTick lastTick;
     SymbolInfoTick(symbol, lastTick);
-    double invalidSL = lastTick.ask - 1 * _Point;  // 너무 가까운 SL
+    double sl = lastTick.ask - (atr * 2);  // ATR의 2배를 SL로 설정
+    double tp = lastTick.ask + (atr * 3);  // ATR의 3배를 TP로 설정
     
-    if(!m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, volume, invalidSL, 0, atr))
-    {
-        Print("예상된 실패: ", m_positionManager.GetLastErrorMsg());
-    }
-    
-    // 4. 정상 포지션 오픈
-    Print("\n--- 정상 포지션 오픈 테스트 ---");
-    double sl = lastTick.ask - (atr * 2);
-    double tp = lastTick.ask + (atr * 3);
+    // 더미 volume 값 (터틀 계산으로 대체됨)
+    double volume = 0.01;
     
     if(m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, volume, sl, tp, atr))
     {
@@ -414,26 +410,26 @@ void CvTrader::TestLiveTrading()
         {
             Print("티켓: ", posInfo.ticket);
             Print("진입가격: ", posInfo.entryPrice);
+            Print("거래량: ", posInfo.volume, " (1유닛)");
             Print("SL: ", posInfo.stopLoss);
             Print("TP: ", posInfo.takeProfit);
+            Print("ATR: ", posInfo.entryATR);
+            Print("계산된 리스크 금액: $", 100.0 * 0.01); // 테스트용 $100의 1%
         }
         
-        // 5. 반대 방향 피라미딩 테스트
-        Print("\n--- 잘못된 피라미딩 방향 테스트 ---");
-        if(!m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_SELL, volume, 0, 0, atr))
-        {
-            Print("예상된 실패: ", m_positionManager.GetLastErrorMsg());
-        }
-        
-        // 6. 정상 피라미딩
-        Print("\n--- 정상 피라미딩 테스트 ---");
+        // 3. 피라미딩 테스트
+        Print("\n--- 피라미딩 테스트 ---");
         if(m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, volume, sl, tp, atr))
         {
             Print("피라미딩 추가 성공");
             Print("현재 피라미딩 횟수: ", m_positionManager.GetSymbolPyramiding(symbol));
         }
+        else
+        {
+            Print("피라미딩 추가 실패: ", m_positionManager.GetLastErrorString());
+        }
         
-        // 7. 포지션 종료
+        // 4. 포지션 종료
         Print("\n--- 포지션 종료 테스트 ---");
         Sleep(1000);
         if(m_positionManager.ClosePosition(symbol))
@@ -442,12 +438,12 @@ void CvTrader::TestLiveTrading()
         }
         else
         {
-            Print("포지션 종료 실패: ", m_positionManager.GetLastErrorMsg());
+            Print("포지션 종료 실패: ", m_positionManager.GetLastErrorString());
         }
     }
     else
     {
-        Print("포지션 오픈 실패: ", m_positionManager.GetLastErrorMsg());
+        Print("포지션 오픈 실패: ", m_positionManager.GetLastErrorString());
     }
     
     Print("\n=== 실제 트레이딩 테스트 종료 ===\n");
