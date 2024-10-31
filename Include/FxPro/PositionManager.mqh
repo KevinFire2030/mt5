@@ -28,9 +28,33 @@ struct SPyramidingInfo
 };
 
 //+------------------------------------------------------------------+
+//| 에러 코드                                                          |
+//+------------------------------------------------------------------+
+enum ENUM_POSITION_ERROR
+{
+    POSITION_ERROR_NONE,              // 에러 없음
+    POSITION_ERROR_MAX_POSITIONS,     // 최대 포지션 수 초과
+    POSITION_ERROR_MAX_PYRAMIDING,    // 최대 피라미딩 수 초과
+    POSITION_ERROR_WRONG_DIRECTION,   // 잘못된 피라미딩 방향
+    POSITION_ERROR_INVALID_VOLUME,    // 잘못된 거래량
+    POSITION_ERROR_INVALID_PRICE,     // 잘못된 가격
+    POSITION_ERROR_INVALID_STOPS,     // 잘못된 SL/TP
+    POSITION_ERROR_NO_POSITION,       // 포지션 없음
+    POSITION_ERROR_TRADE_DISABLED,    // 트레이딩 비활성화
+    POSITION_ERROR_MARKET_CLOSED,     // 마켓 종료
+    POSITION_ERROR_TRADE_FAIL,        // 주문 실패
+    POSITION_ERROR_SYNC_FAIL          // 동기화 실패
+};
+
+//+------------------------------------------------------------------+
 //| 포지션 매니저 클래스                                               |
 //+------------------------------------------------------------------+
 #include <Trade\Trade.mqh>
+
+// 트레이드 에러 코드
+#define ERR_TRADE_TIMEOUT        4305    // 요청 시간 초과
+#define ERR_TRADE_SERVER_BUSY    4107    // 서버 비지
+#define ERR_TRADE_CONNECTION     4526    // 연결 없음
 
 class CPositionManager
 {
@@ -52,6 +76,12 @@ private:
     bool              CanAddPyramiding(string symbol);  // 피라미딩 가능 여부
     int               FindPyramiding(string symbol);  // 심볼의 피라미딩 정보 찾기
     bool              SyncPositions();    // 실제 포지션과 동기화
+    
+    ENUM_POSITION_ERROR  m_lastError;        // 마지막 에러 코드
+    string              m_lastErrorMsg;      // 마지막 에러 메시지
+    
+    // 에러 설정
+    void               SetError(ENUM_POSITION_ERROR error, string msg = "");
     
 public:
     // 생성자/소멸자
@@ -80,6 +110,15 @@ public:
     bool             ExecuteOrder(string symbol, int magic, ENUM_POSITION_TYPE type, 
                                 double volume, double price, double sl, double tp);
     bool             ExecuteClose(string symbol, ulong ticket);
+    
+    // 에러 정보
+    ENUM_POSITION_ERROR GetLastError() const { return m_lastError; }
+    string             GetLastErrorMsg() const { return m_lastErrorMsg; }
+    
+    // 상태 체크 함수 추가
+    bool               IsTradeAllowed(string symbol);
+    bool               ValidateVolume(string symbol, double volume);
+    bool               ValidateStops(string symbol, double price, double sl, double tp);
 };
 
 //+------------------------------------------------------------------+
@@ -167,27 +206,45 @@ bool CPositionManager::CanAddPyramiding(string symbol)
 bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE type, 
                                   double volume, double sl, double tp, double atr)
 {
+    // 초기화
+    SetError(POSITION_ERROR_NONE);
+    
+    // 트레이딩 가능 여부 체크
+    if(!IsTradeAllowed(symbol))
+        return false;
+    
     // 최대 포지션 수 체크
     if(!CanOpenPosition())
     {
-        Print("최대 포지션 수 초과");
+        SetError(POSITION_ERROR_MAX_POSITIONS, "최대 포지션 수 초과");
         return false;
     }
-        
-    // 피라미딩 가능 여부 체크
-    int posIndex = FindPosition(symbol);
-    if(posIndex != -1)  // 이미 포지션 있음
+    
+    // 볼륨 유효성 체크
+    if(!ValidateVolume(symbol, volume))
     {
+        SetError(POSITION_ERROR_INVALID_VOLUME, 
+                StringFormat("잘못된 거래량: %.2f", volume));
+        return false;
+    }
+    
+    // 피라미딩 체크
+    int posIndex = FindPosition(symbol);
+    if(posIndex != -1)
+    {
+        // 최대 피라미딩 체크
         if(!CanAddPyramiding(symbol))
         {
-            Print("최대 피라미딩 횟수 초과");
+            SetError(POSITION_ERROR_MAX_PYRAMIDING, 
+                    StringFormat("최대 피라미딩 횟수 초과: %d", m_maxPyramiding));
             return false;
         }
-            
-        // 기존 포지션과 같은 방향인지 확인
+        
+        // 방향 체크
         if(m_positions[posIndex].type != type)
         {
-            Print("기존 포지션과 반대 방향으로 피라미딩 불가");
+            SetError(POSITION_ERROR_WRONG_DIRECTION, 
+                    "기존 포지션과 반대 방향으로 피라미딩 불가");
             return false;
         }
     }
@@ -196,17 +253,25 @@ bool CPositionManager::OpenPosition(string symbol, int magic, ENUM_POSITION_TYPE
     MqlTick lastTick;
     if(!SymbolInfoTick(symbol, lastTick))
     {
-        Print("가격 정보 조회 실패");
+        SetError(POSITION_ERROR_INVALID_PRICE, "가격 정보 조회 실패");
         return false;
     }
     
     // 주문 가격 설정
     double price = (type == POSITION_TYPE_BUY) ? lastTick.ask : lastTick.bid;
     
+    // SL/TP 유효성 체크
+    if(!ValidateStops(symbol, price, sl, tp))
+    {
+        SetError(POSITION_ERROR_INVALID_STOPS, "잘못된 SL/TP 설정");
+        return false;
+    }
+    
     // 실제 주문 실행
     if(!ExecuteOrder(symbol, magic, type, volume, price, sl, tp))
     {
-        Print("주문 실행 실패");
+        SetError(POSITION_ERROR_TRADE_FAIL, 
+                StringFormat("주문 실패: %d", GetLastError()));
         return false;
     }
     
@@ -327,23 +392,54 @@ bool CPositionManager::ExecuteOrder(string symbol, int magic, ENUM_POSITION_TYPE
     // 매직넘버 설정
     m_trade.SetExpertMagicNumber(magic);
     
-    // 주문 실행
+    // 주문 실행 전 재시도 횟수 설정
+    int maxTries = 3;
+    int tries = 0;
     bool result = false;
-    if(type == POSITION_TYPE_BUY)
-        result = m_trade.Buy(volume, symbol, price, sl, tp);
-    else
-        result = m_trade.Sell(volume, symbol, price, sl, tp);
-        
-    if(!result)
+    
+    while(tries < maxTries)
     {
-        Print("주문 실패: ", GetLastError());
+        // 주문 실행
+        if(type == POSITION_TYPE_BUY)
+            result = m_trade.Buy(volume, symbol, price, sl, tp);
+        else
+            result = m_trade.Sell(volume, symbol, price, sl, tp);
+            
+        if(result)
+            break;
+            
+        // 실패 시 에러 확인
+        int error = GetLastError();
+        
+        // 재시도 가능한 에러인지 확인
+        if(error == ERR_TRADE_TIMEOUT || 
+           error == ERR_TRADE_SERVER_BUSY || 
+           error == ERR_TRADE_CONNECTION)
+        {
+            tries++;
+            Sleep(500);  // 0.5초 대기
+            continue;
+        }
+        
+        // 재시도 불가능한 에러
+        SetError(POSITION_ERROR_TRADE_FAIL, 
+                StringFormat("주문 실패 (에러코드: %d)", error));
         return false;
     }
     
-    // 주문 성공 시 포지션 정보 업데이트
-    if(!SyncPositions())
+    // 주문 성공 시 포지션 정보 동기화
+    if(result)
     {
-        Print("포지션 동기화 실패");
+        if(!SyncPositions())
+        {
+            SetError(POSITION_ERROR_SYNC_FAIL, "포지션 동기화 실패");
+            return false;
+        }
+    }
+    else
+    {
+        SetError(POSITION_ERROR_TRADE_FAIL, 
+                StringFormat("최대 재시도 횟수 초과 (%d회)", maxTries));
         return false;
     }
     
@@ -430,6 +526,128 @@ bool CPositionManager::SyncPositions()
         }
         
         m_positionCount++;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| 에러 설정                                                          |
+//+------------------------------------------------------------------+
+void CPositionManager::SetError(ENUM_POSITION_ERROR error, string msg = "")
+{
+    m_lastError = error;
+    m_lastErrorMsg = msg;
+    
+    if(error != POSITION_ERROR_NONE)
+        Print("포지션 매니저 에러: ", EnumToString(error), ", ", msg);
+}
+
+//+------------------------------------------------------------------+
+//| 상태 체크 함수 추가                                                |
+//+------------------------------------------------------------------+
+bool CPositionManager::IsTradeAllowed(string symbol)
+{
+    // 전역 트레이딩 활성화 여부
+    if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+    {
+        SetError(POSITION_ERROR_TRADE_DISABLED, "트레이딩이 비활성화됨");
+        return false;
+    }
+    
+    // 마켓 상태 체크
+    if(!SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE))
+    {
+        SetError(POSITION_ERROR_MARKET_CLOSED, "마켓이 종료됨");
+        return false;
+    }
+    
+    return true;
+}
+
+bool CPositionManager::ValidateVolume(string symbol, double volume)
+{
+    double minVol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+    double maxVol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+    double stepVol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+    
+    // 최소/최대 볼륨 체크
+    if(volume < minVol || volume > maxVol)
+        return false;
+        
+    // 볼륨 스텝 체크
+    double remainder = MathMod(volume, stepVol);
+    if(remainder > 0.0000001)  // 부동소수점 오차 고려
+        return false;
+        
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| SL/TP 유효성 체크                                                  |
+//+------------------------------------------------------------------+
+bool CPositionManager::ValidateStops(string symbol, double price, double sl, double tp)
+{
+    if(sl == 0 && tp == 0)  // 둘 다 0이면 유효함 (스탑 없음)
+        return true;
+        
+    // 심볼 정보 가져오기
+    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+    int stops_level = (int)SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+    double min_distance = stops_level * point;
+    
+    // 현재가 확인
+    MqlTick lastTick;
+    if(!SymbolInfoTick(symbol, lastTick))
+    {
+        SetError(POSITION_ERROR_INVALID_PRICE, "가격 정보 조회 실패");
+        return false;
+    }
+    
+    // SL 체크
+    if(sl != 0)
+    {
+        if(price > sl)  // 매수 포지션
+        {
+            if(price - sl < min_distance)
+            {
+                SetError(POSITION_ERROR_INVALID_STOPS, 
+                        StringFormat("SL이 너무 가까움 (최소 거리: %d 포인트)", stops_level));
+                return false;
+            }
+        }
+        else  // 매도 포지션
+        {
+            if(sl - price < min_distance)
+            {
+                SetError(POSITION_ERROR_INVALID_STOPS, 
+                        StringFormat("SL이 너무 가까움 (최소 거리: %d 포인트)", stops_level));
+                return false;
+            }
+        }
+    }
+    
+    // TP 체크
+    if(tp != 0)
+    {
+        if(price < tp)  // 매수 포지션
+        {
+            if(tp - price < min_distance)
+            {
+                SetError(POSITION_ERROR_INVALID_STOPS, 
+                        StringFormat("TP가 너무 가까움 (최소 거리: %d 포인트)", stops_level));
+                return false;
+            }
+        }
+        else  // 매도 포지션
+        {
+            if(price - tp < min_distance)
+            {
+                SetError(POSITION_ERROR_INVALID_STOPS, 
+                        StringFormat("TP가 너무 가까움 (최소 거리: %d 포인트)", stops_level));
+                return false;
+            }
+        }
     }
     
     return true;

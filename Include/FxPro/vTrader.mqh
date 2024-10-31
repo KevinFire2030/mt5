@@ -365,7 +365,7 @@ void CvTrader::TestLiveTrading()
     double volume = 0.1;
     
     // ATR 계산
-    double atr = GetATR();  // ATR 값 가져오기
+    double atr = GetATR();
     if(atr == 0)
     {
         Print("ATR 계산 실패");
@@ -381,14 +381,28 @@ void CvTrader::TestLiveTrading()
     }
     Print("포지션 매니저 초기화 성공");
     
-    // 2. 매수 포지션 오픈
-    Print("\n--- 매수 포지션 오픈 테스트 ---");
+    // 2. 잘못된 볼륨으로 테스트
+    Print("\n--- 잘못된 볼륨 테스트 ---");
+    if(!m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, 0.001, 0, 0, atr))
+    {
+        Print("예상된 실패: ", m_positionManager.GetLastErrorMsg());
+    }
     
-    // SL, TP 계산 (예시)
+    // 3. 잘못된 SL/TP로 테스트
+    Print("\n--- 잘못된 SL/TP 테스트 ---");
     MqlTick lastTick;
     SymbolInfoTick(symbol, lastTick);
-    double sl = lastTick.ask - (atr * 2);  // ATR의 2배를 SL로 설정
-    double tp = lastTick.ask + (atr * 3);  // ATR의 3배를 TP로 설정
+    double invalidSL = lastTick.ask - 1 * _Point;  // 너무 가까운 SL
+    
+    if(!m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, volume, invalidSL, 0, atr))
+    {
+        Print("예상된 실패: ", m_positionManager.GetLastErrorMsg());
+    }
+    
+    // 4. 정상 포지션 오픈
+    Print("\n--- 정상 포지션 오픈 테스트 ---");
+    double sl = lastTick.ask - (atr * 2);
+    double tp = lastTick.ask + (atr * 3);
     
     if(m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, volume, sl, tp, atr))
     {
@@ -400,31 +414,40 @@ void CvTrader::TestLiveTrading()
         {
             Print("티켓: ", posInfo.ticket);
             Print("진입가격: ", posInfo.entryPrice);
-            Print("진입시간: ", TimeToString(posInfo.entryTime));
-            Print("볼륨: ", posInfo.volume);
             Print("SL: ", posInfo.stopLoss);
             Print("TP: ", posInfo.takeProfit);
         }
         
-        // 3. 피라미딩 테스트
-        Print("\n--- 피라미딩 테스트 ---");
+        // 5. 반대 방향 피라미딩 테스트
+        Print("\n--- 잘못된 피라미딩 방향 테스트 ---");
+        if(!m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_SELL, volume, 0, 0, atr))
+        {
+            Print("예상된 실패: ", m_positionManager.GetLastErrorMsg());
+        }
+        
+        // 6. 정상 피라미딩
+        Print("\n--- 정상 피라미딩 테스트 ---");
         if(m_positionManager.OpenPosition(symbol, magic, POSITION_TYPE_BUY, volume, sl, tp, atr))
         {
             Print("피라미딩 추가 성공");
             Print("현재 피라미딩 횟수: ", m_positionManager.GetSymbolPyramiding(symbol));
         }
         
-        // 4. 포지션 종료 테스트
+        // 7. 포지션 종료
         Print("\n--- 포지션 종료 테스트 ---");
-        Sleep(1000);  // 1초 대기
+        Sleep(1000);
         if(m_positionManager.ClosePosition(symbol))
         {
             Print("모든 포지션 종료 성공");
         }
+        else
+        {
+            Print("포지션 종료 실패: ", m_positionManager.GetLastErrorMsg());
+        }
     }
     else
     {
-        Print("매수 포지션 오픈 실패: ", GetLastError());
+        Print("포지션 오픈 실패: ", m_positionManager.GetLastErrorMsg());
     }
     
     Print("\n=== 실제 트레이딩 테스트 종료 ===\n");
