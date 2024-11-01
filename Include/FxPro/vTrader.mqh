@@ -83,6 +83,12 @@ public:
     
     // ATR 값 가져오기
     double            GetATR();
+    
+    // 리스크 관리 테스트
+    void              TestRiskManagement();
+    
+    // 리스크 관리 실제 트레이딩 테스트
+    void              TestRiskManagementLive();
 };
 
 //+------------------------------------------------------------------+
@@ -258,7 +264,7 @@ void CvTrader::PrintData()
 //+------------------------------------------------------------------+
 void CvTrader::TestSignal()
 {
-    // 시그널 매니저 업데이���
+    // 시그널 매니저 업데이트
     if(!m_signalManager.Update(m_ema5Buffer, m_ema20Buffer, m_ema40Buffer))
     {
         Print("시그널 매니저 업데이트 실패");
@@ -484,8 +490,178 @@ void CvTrader::OnTick()
     m_isNewBar = IsNewBar();
     if(m_isNewBar)
     {
-        PrintData();        // 데이터 출력
-        TestSignal();       // 시그널 테스트
-        TestLiveTrading();  // 실제 트레이딩 테스트
+        //PrintData();        // 데이터 출력
+        //TestSignal();       // 시그널 테스트
+        //TestLiveTrading();  // 실제 트레이딩 테스트
+        //TestRiskManagement(); // 리스크 관리 테스트
+        TestRiskManagementLive(); // 리스크 관리 실제 테스트
+
     }
-} 
+}
+
+//+------------------------------------------------------------------+
+//| 리스크 관리 테스트                                                 |
+//+------------------------------------------------------------------+
+void CvTrader::TestRiskManagement()
+{
+    string symbol = Symbol();
+    
+    // 1. ATR 계산
+    double atr = GetATR();
+    Print("\n=== ATR 계산 결과 ===");
+    Print("ATR: ", atr);
+    Print("2N (2*ATR): ", 2*atr);
+    
+    // 2. 첫 번째 포지션 진입 테스트 (매수)
+    double entryPrice = SymbolInfoDouble(symbol, SYMBOL_ASK);
+    // double volume = CalculateTurtleUnits(symbol, atr);
+    double volume = 0.01;  // 테스트용 기본 거래량
+    
+    Print("\n=== 첫 번째 포지션 진입 (매수) ===");
+    Print("진입가: ", entryPrice);
+    Print("거래량: ", volume);
+    
+    // 3. 스탑로스 계산
+    double stopLoss = entryPrice - (2 * atr);  // 매수 포지션의 경우
+    Print("스탑로스: ", stopLoss);
+    Print("손실폭(핍): ", MathAbs(entryPrice - stopLoss) / Point());
+    
+    // 4. 매도 포지션 테스트
+    entryPrice = SymbolInfoDouble(symbol, SYMBOL_BID);
+    stopLoss = entryPrice + (2 * atr);  // 매도 포지션의 경우
+    
+    Print("\n=== 매도 포지션 테스트 ===");
+    Print("진입가: ", entryPrice);
+    Print("스탑로스: ", stopLoss);
+    Print("손실폭(핍): ", MathAbs(entryPrice - stopLoss) / Point());
+}
+
+//+------------------------------------------------------------------+
+//| 리스크 관리 실제 트레이딩 테스트                                   |
+//+------------------------------------------------------------------+
+void CvTrader::TestRiskManagementLive()
+{
+    string symbol = Symbol();
+    int m_magic = 12345;
+    
+    Print("\n=== 리스크 관리 실제 트레이딩 테스트 ===");
+    
+    // 1. ATR 계산
+    double atr = GetATR();
+    Print("현재 ATR: ", atr);
+    
+    // 1. 포지션 매니저 초기화
+    if(!m_positionManager.Init(10, 4))
+    {
+        Print("포지션 매니저 초기화 실패");
+        return;
+    }
+    Print("포지션 매니저 초기화 성공");
+    
+    Print("\n--- 정상 포지션 오픈 테스트 ---\n");
+    
+    // 3. 매수 포지션 오픈
+    double entryPrice = SymbolInfoDouble(symbol, SYMBOL_ASK);
+    double stopLoss = entryPrice - (2 * atr);  // 2N 기반 스탑로스
+    double volume = 0.1;  // 테스트용 기본 거래량
+    
+    if(!m_positionManager.OpenPosition(symbol, m_magic, POSITION_TYPE_BUY, volume, entryPrice, stopLoss, atr))
+    {
+        Print("매수 포지션 오픈 실패");
+        return;
+    }
+    Print("매수 포지션 오픈 성공\n");
+    
+    Print("--- 피라미딩 테스트 ---\n");
+    
+    
+    Sleep(1000);  // 1초 대기
+    
+    
+    // 4. 피라미딩 진입
+    entryPrice = SymbolInfoDouble(symbol, SYMBOL_ASK);
+    stopLoss = entryPrice - (2 * atr);  // 새로운 진입가 기준 스탑로스
+    
+    if(!m_positionManager.OpenPosition(symbol, m_magic, POSITION_TYPE_BUY, volume, entryPrice, stopLoss, atr))
+    {
+        Print("피라미딩 추가 실패");
+        return;
+    }
+    Print("피라미딩 추가 성공");
+    
+    
+    Sleep(1000);  // 1초 대기
+    
+    // 스탑로스 동기화 부분 수정
+   Print("\n--- 스탑로스 동기화 테스트 ---");
+   Print("새로운 스탑로스: ", stopLoss);
+
+   // 새로 생성된 피라미딩 포지션의 티켓 저장
+   ulong newPositionTicket = m_positionManager.GetLastPositionTicket();
+   Print("새로 생성된 피라미딩 포지션 티켓: ", newPositionTicket);
+   
+   bool foundAny = false;
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+       // 포지션 선택
+        ulong ticket = PositionGetTicket(i);
+        if(!PositionSelectByTicket(ticket)) 
+        {
+            Print("포지션 선택 실패: ", GetLastError());
+            continue;
+        }
+        
+        // 새로 생성된 피라미딩 포지션은 건너뛰기
+        if(ticket == newPositionTicket)
+        {
+            Print("새 피라미딩 포지션은 스킵: #", ticket);
+            continue;
+        }
+       
+       // 포지션 정보 가져오기
+       string posSymbol = PositionGetString(POSITION_SYMBOL);
+       long posMagic = PositionGetInteger(POSITION_MAGIC);
+       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+       
+       Print("검사중: 심볼=", posSymbol, ", 매직=", posMagic, " (목표: ", symbol, ", ", m_magic, ")");
+       
+       if(posSymbol != symbol || posMagic != m_magic) continue;
+       
+       foundAny = true;
+       //ulong ticket = PositionGetTicket(i);
+       double currentStopLoss = PositionGetDouble(POSITION_SL);
+       double positionPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+       
+       Print("포지션 발견 #", ticket, 
+             "\n  진입가: ", positionPrice,
+             "\n  기존 스탑로스: ", currentStopLoss,
+             "\n  새로운 스탑로스: ", stopLoss,
+             "\n  포지션 타입: ", EnumToString(posType));
+       
+       if(!m_positionManager.ModifyPosition(ticket, 0, stopLoss))
+       {
+           Print("포지션 #", ticket, " 스탑로스 수정 실패: ", GetLastError());
+           continue;
+       }
+       Print("포지션 #", ticket, " 스탑로스 수정 성공");
+   }
+   
+   if(!foundAny)
+   {
+       Print("동기화할 포지션을 찾을 수 없습니다");
+       Print("현재 총 포지션 수: ", PositionsTotal());
+   }
+   
+   Print("스탑로스 동기화 완료\n");
+    
+    // 5. 모든 포지션 종료
+    if(!m_positionManager.ClosePosition(symbol))
+    {
+        Print("포지션 종료 실패");
+        return;
+    }
+    Print("모든 포지션 종료 성공\n");
+    
+    Print("=== 실제 트레이딩 테스트 종료 ===\n");
+}
+

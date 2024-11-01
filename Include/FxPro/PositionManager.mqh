@@ -154,6 +154,12 @@ public:
     // 터틀 설정
     void             SetTurtleSettings(const STurtleUnitSettings &settings) { m_turtleSettings = settings; }
     void             GetTurtleSettings(STurtleUnitSettings &settings) const { settings = m_turtleSettings; }
+
+    // 마지막으로 생성된 포지션 티켓 반환
+    ulong CPositionManager::GetLastPositionTicket();
+
+    // 포지션 수정 
+    bool ModifyPosition(ulong ticket, double takeProfit, double stopLoss);
 };
 
 //+------------------------------------------------------------------+
@@ -404,6 +410,9 @@ bool CPositionManager::ExecuteOrder(string symbol, int magic,
     // POSITION_TYPE을 ORDER_TYPE으로 변환
     ENUM_ORDER_TYPE orderType = (type == POSITION_TYPE_BUY) ? 
                                ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+    
+    // 매직넘버 설정
+    m_trade.SetExpertMagicNumber(magic);
     
     // 주문 실행
     if(!m_trade.PositionOpen(symbol, orderType, volume, price, stopLoss, 0))
@@ -716,4 +725,47 @@ double CPositionManager::CalculateStopLoss(string symbol, ENUM_POSITION_TYPE typ
         stopLoss = entryPrice + twoN;
         
     return NormalizeDouble(stopLoss, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
+}
+
+//+------------------------------------------------------------------+
+//| 마지막으로 생성된 포지션 티켓 반환                                |
+//+------------------------------------------------------------------+
+ulong CPositionManager::GetLastPositionTicket()
+{
+    return m_trade.ResultOrder();
+}
+
+//+------------------------------------------------------------------+
+//| 포지션 수정                                                        |
+//+------------------------------------------------------------------+
+bool CPositionManager::ModifyPosition(ulong ticket, double takeProfit, double stopLoss)
+{
+    if(!PositionSelectByTicket(ticket))
+    {
+        Print("포지션 선택 실패: ", ticket);
+        return false;
+    }
+    
+    // 현재 스탑로스와 새로운 스탑로스의 차이 확인
+    double currentSL = PositionGetDouble(POSITION_SL);
+    double minChange = SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_TRADE_TICK_SIZE);
+    
+    // 변경이 너무 작으면 성공으로 처리
+    if(MathAbs(currentSL - stopLoss) < minChange * 2)  // 2틱 이상 차이날 때만 수정
+    {
+        Print("스탑로스 변경이 너무 작음 (", 
+              StringFormat("%.5f -> %.5f, 차이: %.5f, 최소변경: %.5f", 
+                         currentSL, stopLoss, MathAbs(currentSL - stopLoss), minChange * 2));
+        return true;  // 변경이 필요없으므로 성공으로 처리
+    }
+    
+    m_trade.SetExpertMagicNumber(m_magic);
+    
+    if(!m_trade.PositionModify(ticket, stopLoss, takeProfit))
+    {
+        Print("주문 수정 실패: ", GetLastError());
+        return false;
+    }
+    
+    return true;
 }
