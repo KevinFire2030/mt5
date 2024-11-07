@@ -5,8 +5,11 @@
 // vTrader_v1.2.mqh 파일을 같은 디렉토리에서 포함
 #include "vTrader_v1.2_trade_time.mqh"
 
+// 필요한 헤더 파일 포함
+#include <Trade\Trade.mqh>
+
 // EA 파라미터
-input ulong InpMagicNumber = 20241106;  // 매직 넘버
+input ulong InpMagicNumber = 20241107;  // 매직 넘버
 
 // 전역 변수
 CvTrader* g_trader = NULL;
@@ -66,6 +69,8 @@ void OnTick()
     if(g_trader != NULL) {
         // 거래 시간 체크
         if(!IsTradeTime()) {
+            // 거래 시간이 아니면 모든 포지션 청산
+            CloseAllPositions();
             return;  // 거래 시간이 아니면 종료
         }
         
@@ -113,8 +118,8 @@ double OnTester()
     double total_profit = 0;
     int winning_trades = 0;
     int losing_trades = 0;
-    double total_wins = 0;    // 승리 거래의 총 수익
-    double total_losses = 0;  // 패배 거래의 총 손실
+    double total_wins = 0;    
+    double total_losses = 0;  
     
     // 전체 거래 내역 가져오기
     HistorySelect(0, TimeCurrent());
@@ -126,10 +131,20 @@ double OnTester()
         ulong ticket = HistoryDealGetTicket(i);
         if(ticket <= 0) continue;
         
+        // 매직 넘버 확인
+        int deal_magic = (int)HistoryDealGetInteger(ticket, DEAL_MAGIC);
+        if(deal_magic != InpMagicNumber) continue;  // 현재 EA의 거래만 분석
+        
+        // 거래 유형 확인
+        ENUM_DEAL_TYPE deal_type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
+        if(deal_type != DEAL_TYPE_BUY && deal_type != DEAL_TYPE_SELL) continue;  // 실제 거래만 분석
+        
         // 거래 정보 가져오기 및 보정
-        double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT) / 100.0;  // profit 보정
-        double commission = HistoryDealGetDouble(ticket, DEAL_COMMISSION) / 100.0;  // commission 보정
-        double swap = HistoryDealGetDouble(ticket, DEAL_SWAP) / 100.0;  // swap 보정
+        double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT) / 100.0;
+        double commission = HistoryDealGetDouble(ticket, DEAL_COMMISSION) / 100.0;
+        double swap = HistoryDealGetDouble(ticket, DEAL_SWAP) / 100.0;
+        
+        // 순손익 계산
         double net_profit = profit + commission + swap;
         
         // 통계 업데이트
@@ -175,4 +190,39 @@ double OnTester()
     
     // TE를 반환 (전략 테스터의 최적화에 사용됨)
     return te;
+}
+
+// 모든 포지션을 청산하는 함수 추가
+void CloseAllPositions()
+{
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if(ticket > 0)
+        {
+            // 포지션 닫기 요청
+            MqlTradeRequest request;
+            MqlTradeResult result;
+            ZeroMemory(request);
+            ZeroMemory(result);
+            
+            request.action = TRADE_ACTION_DEAL;
+            request.position = ticket;
+            request.symbol = PositionGetString(POSITION_SYMBOL);
+            request.volume = PositionGetDouble(POSITION_VOLUME);
+            request.type = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+            request.price = SymbolInfoDouble(request.symbol, (request.type == ORDER_TYPE_BUY) ? SYMBOL_ASK : SYMBOL_BID);
+            request.deviation = 10; // 슬리피지 허용 범위
+            request.magic = InpMagicNumber;
+            
+            if(!OrderSend(request, result))
+            {
+                Print("포지션 청산 실패: ", GetLastError());
+            }
+            else
+            {
+                Print("포지션 청산 성공: ", ticket);
+            }
+        }
+    }
 } 
