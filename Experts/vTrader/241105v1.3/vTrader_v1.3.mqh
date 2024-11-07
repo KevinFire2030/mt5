@@ -235,9 +235,27 @@ public:
         if(!m_isAutoTrading) return;
         if(!IsNewBar()) return;
         
-        Print("=== 새로운 봉 생성 ===");
+         Print("=== 새로운 봉 생성 ===");
         Print("시간: ", TimeToString(TimeCurrent()));
+        int n = 1; // N-1봉을 의미
+        datetime time = iTime(m_symbol, PERIOD_CURRENT, n);
+        double open = iOpen(m_symbol, PERIOD_CURRENT, n);
+        double high = iHigh(m_symbol, PERIOD_CURRENT, n);
+        double low = iLow(m_symbol, PERIOD_CURRENT, n);
+        double close = iClose(m_symbol, PERIOD_CURRENT, n);
+        double tickVolume = iTickVolume(m_symbol, PERIOD_CURRENT, n);
+        double realVolume = iVolume(m_symbol, PERIOD_CURRENT, n);
         
+        Print("N-1봉 정보:");
+        Print("시간: ", TimeToString(time));
+        Print("시가: ", open);
+        Print("고가: ", high);
+        Print("저가: ", low);
+        Print("종가: ", close);
+        Print("틱 볼륨: ", tickVolume);
+        Print("실 볼륨: ", realVolume);
+        
+
         int signal = CheckEmaSignal();
         
         // 포지션이 있는 경우
