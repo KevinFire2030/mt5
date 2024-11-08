@@ -6,6 +6,7 @@
 
 # 로그 파일들
 *.log
+Logs/
 
 # 백업 파일들
 *.bak
@@ -23,7 +24,6 @@
 
 # 폴더 제외
 Files/
-Logs/
 Experts/Examples/
 Libraries/
 Include/DoEasy/

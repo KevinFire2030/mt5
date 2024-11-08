@@ -76,7 +76,7 @@ private:
         //Print("EMA20: ", ema20[0]);
         //Print("EMA40: ", ema40[0]);
         
-        double minDiff = 0.5;  // 최소 차이 설정
+        double minDiff = 0.0;  // 최소 차이 설정
         
         // 정배열 체크 (5 > 20 > 40)
         if(ema5[0] > ema20[0] + minDiff && ema20[0] > ema40[0] + minDiff) {
@@ -235,7 +235,7 @@ public:
         if(!m_isAutoTrading) return;
         if(!IsNewBar()) return;
         
-        Print("=== 새로운 봉 생성 ===");
+        Print("=== 새로운 틱 생성 ===");
         Print("시간: ", TimeToString(TimeCurrent()));
         
 
