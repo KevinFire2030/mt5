@@ -9,7 +9,7 @@
 
 // 입력 파라미터
 //input int InpTickCount = 100;        // 틱 개수
-input int InpTickCount = 5;        // 틱 개수
+input int InpTickCount = 100;        // 틱 개수
 input bool InpShowDebug = true;      // 디버그 메시지 표시 (테스트를 위해 true로 변경)
 
 // 전역 변수
@@ -23,7 +23,7 @@ struct TickBarData {
     double open;         // 시가
     double high;         // 고가
     double low;          // 저가
-    double close;        // 종가
+    double close;        // 
     ulong volume;        // 거래량
     int tickCount;       // 틱 수
     
@@ -88,6 +88,16 @@ int OnInit()
     // 현재 봉 초기화
     g_currentBar.Reset();
     
+    // 지표 추가
+    int indicator_handle = iCustom(_Symbol, PERIOD_CURRENT, "tick_chart_indicator");
+    
+    if(indicator_handle == INVALID_HANDLE) {
+        Print("지표 추가 실패. Error: ", GetLastError());
+        return INIT_FAILED;
+    }
+    
+    Print("지표 추가 성공");
+    
     return(INIT_SUCCEEDED);
 }
 
@@ -96,91 +106,15 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+    // 지표 제거
+    long chartID = ChartID();
+    ChartIndicatorDelete(chartID, 0, "tick_chart_indicator");
+    
     Print("=== EA 종료 ===");
     Print("종료 이유: ", GetUninitReasonText(reason));
 }
 
-//+------------------------------------------------------------------+
-//| 과거 틱 데이터에서 매수/매도 플래그 확인                            |
-//+------------------------------------------------------------------+
-bool CheckTradeFlags()
-{
-    MqlTick ticks[];
-    ArraySetAsSeries(ticks, true);
-    
-    // 최근 10000개의 틱 데이터 복사
-    ulong copied = CopyTicks(_Symbol, ticks, COPY_TICKS_ALL, 0, 10000);
-    
-    if(copied <= 0) {
-        Print("틱 데이터를 가져오는데 실패했습니다. Error: ", GetLastError());
-        return false;
-    }
-    
-    int buyCount = 0;
-    int sellCount = 0;
-    
-    // 틱 데이터 분석
-    for(ulong i = 0; i < copied; i++) {
-        if((ticks[i].flags & TICK_FLAG_BUY) != 0) buyCount++;
-        if((ticks[i].flags & TICK_FLAG_SELL) != 0) sellCount++;
-        
-        // 매수/매도 플래그가 모두 발견되면 종료
-        if(buyCount > 0 && sellCount > 0) {
-            Print("=== 매수/매도 플래그 발견 ===");
-            Print("분석한 틱 수: ", i + 1);
-            Print("매수 틱: ", buyCount);
-            Print("매도 틱: ", sellCount);
-            return true;
-        }
-    }
-    
-    Print("=== 매수/매도 플래그 분석 결과 ===");
-    Print("분석한 틱 수: ", copied);
-    Print("매수 틱: ", buyCount);
-    Print("매도 틱: ", sellCount);
-    
-    return (buyCount > 0 || sellCount > 0);
-}
 
-//+------------------------------------------------------------------+
-//| 과거 틱 데이터에서 Last 가격 변경 틱 확인                           |
-//+------------------------------------------------------------------+
-bool CheckLastPriceFlags()
-{
-    MqlTick ticks[];
-    ArraySetAsSeries(ticks, true);
-    
-    // 최근 10000개의 틱 데이터 복사
-    ulong copied = CopyTicks(_Symbol, ticks, COPY_TICKS_ALL, 0, 10000);
-    
-    if(copied <= 0) {
-        Print("틱 데이터를 가져오는데 실패했습니다. Error: ", GetLastError());
-        return false;
-    }
-    
-    long lastCount = 0;
-    long volumeCount = 0;
-    ulong totalVolume = 0;
-    
-    // 틱 데이터 분석
-    for(ulong i = 0; i < copied; i++) {
-        if((ticks[i].flags & TICK_FLAG_LAST) != 0) {
-            lastCount++;
-            if(ticks[i].volume > 0) {
-                volumeCount++;
-                totalVolume += ticks[i].volume;
-            }
-        }
-    }
-    
-    Print("=== Last 가격 틱 분석 결과 ===");
-    Print("분석한 틱 수: ", copied);
-    Print("Last 가격 변경 틱: ", lastCount);
-    Print("거래량 포함 틱: ", volumeCount);
-    Print("총 거래량: ", totalVolume);
-    
-    return (lastCount > 0);
-}
 
 //+------------------------------------------------------------------+
 //| 봉 데이터 검증                                                     |
@@ -202,7 +136,7 @@ bool ValidateBarData(const TickBarData& bar)
     }
     if(bar.high <= 0) {
         g_validation.isValidHigh = false;
-        g_validation.errorMessage += "잘못된 고가; ";
+        g_validation.errorMessage += "못된 고가; ";
     }
     if(bar.low <= 0) {
         g_validation.isValidLow = false;
@@ -231,7 +165,7 @@ bool ValidateBarData(const TickBarData& bar)
     // 3. 거래량 검증
     if(bar.volume <= 0) {
         g_validation.isValidVolume = false;
-        g_validation.errorMessage += "���못된 거래량; ";
+        g_validation.errorMessage += "못된 거래량; ";
     }
     
     // 4. 틱 카운트 검증
@@ -261,6 +195,21 @@ bool ValidateBarData(const TickBarData& bar)
     return g_validation.isValid;
 }
 
+// 봉 데이터 저장 함수 추가
+void SaveBarData(const TickBarData& bar, int index) {
+    string prefix = "TickChart_" + _Symbol + "_";
+    
+    GlobalVariableSet(prefix + "Index", index);
+    GlobalVariableSet(prefix + "Time", bar.time);
+    GlobalVariableSet(prefix + "TimeMsc", bar.time_msc);
+    GlobalVariableSet(prefix + "Open", bar.open);
+    GlobalVariableSet(prefix + "High", bar.high);
+    GlobalVariableSet(prefix + "Low", bar.low);
+    GlobalVariableSet(prefix + "Close", bar.close);
+    GlobalVariableSet(prefix + "Volume", bar.volume);
+    GlobalVariableSet(prefix + "IsNewBar", 1);  // 새로운 봉 플래그
+}
+
 //+------------------------------------------------------------------+
 //| Expert tick function                                              |
 //+------------------------------------------------------------------+
@@ -268,18 +217,6 @@ void OnTick()
 {
     MqlTick tick;
     if(!SymbolInfoTick(_Symbol, tick)) return;
-    
-    // 틱 정보 출력
-    if(InpShowDebug) {
-        string timeStr = TimeToString(tick.time, TIME_DATE|TIME_SECONDS) + 
-                        "." + IntegerToString(tick.time_msc % 1000, 3, '0');  // 밀리초 3자리 포맷
-        
-        Print("=== 틱 정보 ===");
-        Print("Time(ms): ", timeStr, " (", tick.time_msc, ")");
-        Print("Last: ", tick.last);
-        Print("Volume: ", tick.volume);
-        Print("Flags: ", tick.flags);
-    }
     
     // Last 가격이 변경된 틱만 처리
     if((tick.flags & TICK_FLAG_LAST) == 0) return;
@@ -289,10 +226,21 @@ void OnTick()
     if(tick.time_msc == g_lastTickTime_msc) return;
     g_lastTickTime_msc = tick.time_msc;
     
+    // 틱 정보 출력
+    if(InpShowDebug) {
+        string timeStr = TimeToString(tick.time, TIME_DATE|TIME_SECONDS) + 
+                        "." + IntegerToString(tick.time_msc % 1000, 3, '0');
+        Print("=== 틱 정보 ===");
+        Print("Time(ms): ", timeStr, " (", tick.time_msc, ")");
+        Print("Last: ", tick.last);
+        Print("Volume: ", tick.volume);
+        Print("Flags: ", tick.flags);
+    }
+    
     // 첫 틱인 경우 새로운 봉 시작
     if(g_currentBar.tickCount == 0) {
         g_currentBar.time = tick.time;
-        g_currentBar.time_msc = tick.time_msc;  // 밀리초 정보 저장
+        g_currentBar.time_msc = tick.time_msc;
         g_currentBar.open = tick.last;
         g_currentBar.high = tick.last;
         g_currentBar.low = tick.last;
@@ -313,10 +261,17 @@ void OnTick()
     if(g_currentBar.tickCount >= InpTickCount) {
         // 봉 데이터 검증
         if(ValidateBarData(g_currentBar)) {
+            // 글로벌 변수로 데이터 저장
+            static int barIndex = 0;
+            SaveBarData(g_currentBar, barIndex++);
+            
+            // 차트 업데이트 요청
+            ChartRedraw();
+            
             if(InpShowDebug) {
                 Print("=== 봉 완성 (검증 통과) ===");
                 Print("시간: ", TimeToString(g_currentBar.time, TIME_DATE|TIME_SECONDS), 
-                      ".", g_currentBar.time_msc % 1000);  // 밀리초 표시 추가
+                      ".", g_currentBar.time_msc % 1000);
                 Print("OHLC: ", g_currentBar.open, ", ", g_currentBar.high, 
                       ", ", g_currentBar.low, ", ", g_currentBar.close);
                 Print("거래량: ", g_currentBar.volume);
